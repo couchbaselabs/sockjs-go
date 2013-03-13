@@ -23,6 +23,7 @@ type conn struct {
 	context
 	input_channel    chan []byte
 	output_channel   chan []byte
+	quit_channel     chan bool
 	timeout          time.Duration
 	httpTransactions chan *httpTransaction
 }
@@ -31,6 +32,7 @@ func newConn(ctx *context) *conn {
 	return &conn{
 		input_channel:    make(chan []byte),
 		output_channel:   make(chan []byte, 64),
+		quit_channel:     make(chan bool),
 		httpTransactions: make(chan *httpTransaction),
 		timeout:          time.Second * 30,
 		context:          *ctx,
@@ -38,10 +40,13 @@ func newConn(ctx *context) *conn {
 }
 
 func (this *conn) ReadMessage() ([]byte, error) {
-	if val, ok := <-this.input_channel; ok {
+	select {
+	case <-this.quit_channel:
+		return []byte{}, io.EOF
+	case val := <-this.input_channel:
 		return val[1 : len(val)-1], nil
 	}
-	return []byte{}, io.EOF
+	panic("unreachable")
 }
 
 func (this *conn) WriteMessage(val []byte) (count int, err error) {
@@ -50,6 +55,8 @@ func (this *conn) WriteMessage(val []byte) (count int, err error) {
 	select {
 	case this.output_channel <- val2:
 	case <-time.After(this.timeout):
+		return 0, ErrConnectionClosed
+	case <-this.quit_channel:
 		return 0, ErrConnectionClosed
 	}
 	return len(val), nil
@@ -61,8 +68,7 @@ func (this *conn) Close() (err error) {
 			err = ErrConnectionClosed
 		}
 	}()
-	close(this.input_channel)
-	close(this.output_channel)
+	close(this.quit_channel)
 	return
 }
 
